@@ -1,0 +1,6 @@
+{
+  "name": "Color Trading Mastery",
+  "description": "Ultra-premium digital book selling platform, crypto checkout, admin approval dashboard, and secure interactive ebook reader for professional traders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

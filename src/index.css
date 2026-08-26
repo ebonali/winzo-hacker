@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Kalpurush";
+  src: url("./assets/fonts/kalpurush.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Hind Siliguri", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Tiro Bangla", "Hind Siliguri", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-ink: #0b0a08;
+  --color-surface: #14120e;
+  --color-surface2: #1a1712;
+  --color-paper: #ece7db;
+  --color-muted: #a09888;
+  --color-faint: #6b6459;
+  --color-brass: #d9a441;
+  --color-brass-bright: #e9c06a;
+  --color-line: rgba(236, 231, 219, 0.09);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background-color: var(--color-ink);
+    color: var(--color-paper);
+    font-family: var(--font-sans);
+    font-weight: 400;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--color-brass);
+    color: var(--color-ink);
+  }
+}
+
+/* ---------- scrollbar ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--color-ink); }
+::-webkit-scrollbar-thumb { background: #2b2720; border-radius: 8px; border: 3px solid var(--color-ink); }
+::-webkit-scrollbar-thumb:hover { background: #3d372c; }
+
+/* ---------- typography helpers ---------- */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-brass);
+}
+
+.serif { font-family: var(--font-display); }
+
+/* legacy alias — old pages keep working with the new look */
+.font-display { font-family: var(--font-display); }
+
+.blue-text-gradient, .gold-text-gradient {
+  color: var(--color-brass);
+  -webkit-text-fill-color: currentColor;
+}
+
+/* ---------- surfaces ---------- */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+}
+.card-flat {
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+}
+.card:hover {
+  border-color: rgba(236, 231, 219, 0.16);
+}
+
+/* legacy aliases (pages not yet migrated keep a coherent look) */
+.bento-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  transition: border-color 0.25s ease;
+}
+.bento-card:hover {
+  border-color: rgba(236, 231, 219, 0.16);
+}
+.bento-card-blue, .bento-card-gold {
+  background: var(--color-surface);
+  border: 1px solid rgba(217, 164, 65, 0.28);
+  border-radius: 14px;
+  transition: border-color 0.25s ease;
+}
+.bento-card-blue:hover, .bento-card-gold:hover {
+  border-color: rgba(217, 164, 65, 0.45);
+}
+
+/* ---------- buttons ---------- */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.75rem;
+  background: var(--color-brass);
+  color: #171310;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border-radius: 10px;
+  transition: background 0.2s ease, transform 0.15s ease;
+  cursor: pointer;
+}
+.btn-primary:hover { background: var(--color-brass-bright); }
+.btn-primary:active { transform: translateY(1px); }
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.75rem;
+  background: transparent;
+  color: var(--color-paper);
+  font-weight: 500;
+  font-size: 0.9rem;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+}
+.btn-ghost:hover {
+  border-color: rgba(236, 231, 219, 0.28);
+  background: rgba(236, 231, 219, 0.04);
+}
+
+.btn-sm { padding: 0.55rem 1.1rem; font-size: 0.8rem; }
+
+/* ---------- misc ---------- */
+.hairline-t { border-top: 1px solid var(--color-line); }
+.hairline-b { border-bottom: 1px solid var(--color-line); }
+
+.num {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum";
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+/* ============ EBOOK READER PROTECTION ============ */
+
+.reader-protected {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
+@media print {
+  .reader-protected { display: none !important; }
+  body::after {
+    content: "এই কনটেন্টটি কপিরাইট সংরক্ষিত — Color Trading Mastery";
+    display: block;
+    text-align: center;
+    padding-top: 40vh;
+    font-size: 18px;
+  }
+}
+
+.reader-protected.reader-hidden {
+  filter: blur(14px);
+  pointer-events: none;
+  transition: filter 0.15s ease;
+}
+
+.reader-prose {
+  font-family: "Kalpurush", "Hind Siliguri", serif;
+  position: relative;
+}
+
+.reader-prose::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--watermark-bg);
+  background-repeat: repeat;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  z-index: 5;
+}
