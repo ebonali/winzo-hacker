@@ -4,8 +4,16 @@ import { BOOK_PRICE_USDT, BOOK_PRICE_BDT } from '../data/bookData';
 import { Order } from '../types';
 import { api } from '../lib/api';
 import {
-  Check, ShieldCheck, Clock, Lock, Wallet, Loader2, CheckCircle2, RefreshCw
+  Check, ShieldCheck, Clock, Lock, Wallet, Loader2, CheckCircle2, RefreshCw, Ticket
 } from 'lucide-react';
+
+interface PromoInfo {
+  code: string;
+  discountBdt: number;
+  discountUsdt: number;
+  finalBdt: number;
+  finalUsdt: number;
+}
 
 export const CheckoutPage: React.FC = () => {
   const { currentUser, navigate, showToast, refreshMe, myOrders, bookMeta } = useStore();
@@ -17,6 +25,15 @@ export const CheckoutPage: React.FC = () => {
   const [isCheckingZini, setIsCheckingZini] = useState(false);
   const [forceForm, setForceForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [promoInput, setPromoInput] = useState('');
+  const [promo, setPromo] = useState<PromoInfo | null>(null);
+  const [isApplyingPromo, setIsApplyingPromo] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
+
+  const finalBdt = promo?.finalBdt ?? priceBdt;
+  const finalUsdt = promo?.finalUsdt ?? priceUsdt;
+  const displayBdt = promo ? finalBdt : priceBdt;
+  const displayUsdt = promo ? finalUsdt : priceUsdt;
 
   // handle return from ZiniPay (?zini_order=<id> / ?zini_cancel=<id>)
   useEffect(() => {
@@ -74,13 +91,39 @@ export const CheckoutPage: React.FC = () => {
     if (!hasLoaded && currentUser) { setHasLoaded(true); refreshMe(); }
   }, [currentUser, refreshMe, hasLoaded]);
 
+  const applyPromo = async () => {
+    const code = promoInput.trim();
+    if (!code) { setPromoError('প্রোমো কোড লিখুন।'); return; }
+    setIsApplyingPromo(true);
+    setPromoError(null);
+    try {
+      const res = await api<{ valid: boolean; error?: string } & PromoInfo>('/api/promo/validate', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      });
+      if (!res?.valid) {
+        setPromo(null);
+        setPromoError(res?.error || 'প্রোমো কোডটি সঠিক নয়।');
+        return;
+      }
+      setPromo(res);
+      showToast(`${res.code} — ${res.discountBdt}৳ ছাড়!`);
+    } catch (err: any) {
+      setPromoError(err?.message || 'প্রোমো যাচাই করা যায়নি।');
+    } finally {
+      setIsApplyingPromo(false);
+    }
+  };
+
+  const removePromo = () => { setPromo(null); setPromoInput(''); setPromoError(null); };
+
   const startZinipayPayment = async () => {
     setError(null);
     setIsSubmitting(true);
     try {
       const data = await api<{ orderId: string; paymentUrl: string }>('/api/payment/zinipay/create', {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ promoCode: promo?.code || '' }),
       });
       window.location.href = data.paymentUrl;
     } catch (err: any) {
@@ -234,13 +277,62 @@ export const CheckoutPage: React.FC = () => {
           <div>
             <div className="text-xs text-faint mb-1">মোট মূল্য · লাইফটাইম এক্সেস</div>
             <div className="flex items-baseline gap-2">
-              <span className="serif text-3xl text-paper">{priceBdt}৳</span>
-              <span className="num text-sm text-faint">${priceUsdt}</span>
+              <span className="serif text-3xl text-paper">{displayBdt}৳</span>
+              <span className="num text-sm text-faint">
+                {promo && (
+                  <s className="mr-1.5">{priceBdt}৳</s>
+                )}
+                ${displayUsdt.toFixed(2)}
+              </span>
             </div>
+            {promo && (
+              <div className="text-xs text-emerald-400 mt-1">
+                {promo.code} · {promo.discountBdt}৳ ছাড় প্রযোজ্য
+              </div>
+            )}
           </div>
           <div className="w-11 h-11 rounded-lg bg-brass flex items-center justify-center shrink-0">
             <Wallet className="w-5 h-5 text-[#171310]" />
           </div>
+        </div>
+
+        {/* promo code */}
+        <div className="space-y-3">
+          {!promo ? (
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Ticket className="w-4 h-4 text-faint absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  value={promoInput}
+                  onChange={(e) => { setPromoInput(e.target.value.toUpperCase()); setPromoError(null); }}
+                  onKeyDown={(e) => e.key === 'Enter' && applyPromo()}
+                  placeholder="প্রোমো কোড (ঐচ্ছিক)"
+                  className="w-full rounded-lg bg-[#0b0a08] border border-line px-9 py-3 text-sm text-paper placeholder:text-faint outline-none focus:border-brass transition"
+                />
+              </div>
+              <button
+                onClick={applyPromo}
+                disabled={isApplyingPromo}
+                className="px-4 py-3 rounded-lg border border-line text-sm text-brass hover:border-brass transition shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                {isApplyingPromo ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Apply'}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/25">
+              <div className="flex items-center gap-2 text-sm text-emerald-400">
+                <Check className="w-4 h-4" />
+                <span className="font-mono">{promo.code}</span>
+                <span className="text-faint">— {promo.discountBdt}৳ ছাড়</span>
+              </div>
+              <button onClick={removePromo} className="text-xs text-faint hover:text-red-400 transition cursor-pointer">
+                সরান
+              </button>
+            </div>
+          )}
+          {promoError && (
+            <p className="text-xs text-red-400">{promoError}</p>
+          )}
         </div>
 
         {/* benefits */}
@@ -279,7 +371,7 @@ export const CheckoutPage: React.FC = () => {
           ) : (
             <>
               <ShieldCheck className="w-4 h-4" />
-              পেমেন্ট করুন — {priceBdt}৳
+              পেমেন্ট করুন — {displayBdt}৳
             </>
           )}
         </button>

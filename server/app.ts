@@ -313,6 +313,55 @@ export async function createApp(): Promise<express.Express> {
     return json;
   }
 
+  // ---------- Promo codes ----------
+
+  async function lookupPromo(codeRaw: string) {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    if (!code) return { code, promo: null };
+    const { data } = await sb()
+      .from("promo_codes")
+      .select("*")
+      .eq("code", code)
+      .maybeSingle();
+    return { code, promo: data || null };
+  }
+
+  function computePromoDiscount(promo: any, priceBdt: number, priceUsdt: number) {
+    let discountBdt = 0;
+    let discountUsdt = 0;
+    if (promo.discount_type === "percent") {
+      discountBdt = (priceBdt * Number(promo.discount_value)) / 100;
+      discountUsdt = (priceUsdt * Number(promo.discount_value)) / 100;
+    } else {
+      discountBdt = Math.min(Number(promo.discount_value), priceBdt);
+      discountUsdt = (priceUsdt / priceBdt) * discountBdt;
+    }
+    const finalBdt = Math.max(0, Math.round(priceBdt - discountBdt));
+    const finalUsdt = Math.max(0, priceUsdt - discountUsdt);
+    return { discountBdt, discountUsdt, finalBdt, finalUsdt };
+  }
+
+  interface PromoResult {
+    error?: string;
+    promo?: any;
+    code?: string;
+    discountBdt?: number;
+    discountUsdt?: number;
+    finalBdt?: number;
+    finalUsdt?: number;
+  }
+
+  const applyPromoCode = async (codeRaw: string, priceBdt: number, priceUsdt: number): Promise<PromoResult> => {
+    const { code, promo } = await lookupPromo(codeRaw);
+    if (!promo) return { error: "প্রোমো কোডটি সঠিক নয়।" };
+    if (!promo.active) return { error: "প্রোমো কোডটি এখন আর সচল নেই।" };
+    if (promo.max_uses > 0 && promo.used_count >= promo.max_uses) {
+      return { error: "প্রোমো কোডটির সর্বোচ্চ ব্যবহার সীমা শেষ হয়ে গেছে।" };
+    }
+    const disc = computePromoDiscount(promo, priceBdt, priceUsdt);
+    return { promo, code, ...disc };
+  };
+
   // shared logic: mark order approved + grant reader access
   async function approveOrderAndGrantAccess(orderId: string, userId: string) {
     await sb()
@@ -343,15 +392,26 @@ export async function createApp(): Promise<express.Express> {
     }
 
     // create local pending order first
+    const settings = await getBookSettings();
+    const promoRaw = req.body?.promoCode || "";
+    const promoResult = promoRaw ? await applyPromoCode(promoRaw, Number(settings.priceBdt), Number(settings.priceUsdt)) : null;
+    if (promoRaw && promoResult?.error) {
+      return res.status(400).json({ error: promoResult.error });
+    }
+
+    const finalBdt = promoResult?.finalBdt ?? Number(settings.priceBdt);
+    const finalUsdt = promoResult?.finalUsdt ?? Number(settings.priceUsdt);
+
     const { data: order, error: orderErr } = await sb()
       .from("orders")
       .insert({
         user_id: user.id,
         email: user.email,
         tx_id: "-",
-        amount_usdt: BOOK_PRICE_USDT,
+        amount_usdt: finalUsdt,
         status: "pending",
         payment_method: "zinipay",
+        promo_code: promoResult?.code || null,
       })
       .select("id")
       .single();
@@ -362,17 +422,16 @@ export async function createApp(): Promise<express.Express> {
     }
 
     const baseUrl = APP_URL || `http://localhost:${process.env.PORT ? Number(process.env.PORT) : 3000}`;
-    const settings = await getBookSettings();
     // Update order with correct priceUsdt from settings
     await sb()
       .from("orders")
-      .update({ amount_usdt: settings.priceUsdt })
+      .update({ amount_usdt: finalUsdt })
       .eq("id", order.id);
     const invoice = await ziniApi("/v1/payment/create", {
       cus_name: user.name,
       cus_email: user.email,
-      amount: settings.priceBdt,
-      metadata: { order_id: order.id, book: settings.title },
+      amount: finalBdt,
+      metadata: { order_id: order.id, book: settings.title, promo_code: promoResult?.code || "" },
       redirect_url: `${baseUrl}/?zini_order=${order.id}`,
       cancel_url: `${baseUrl}/?zini_cancel=${order.id}`,
     }).catch((e: Error) => {
@@ -446,6 +505,17 @@ export async function createApp(): Promise<express.Express> {
       }
       const ok = await approveOrderAndGrantAccess(order.id, user.id);
       if (!ok) return res.status(500).json({ error: "এক্সেস দেওয়া যায়নি।" });
+      if (order.promo_code) {
+        const { data: promoRow } = await sb()
+          .from("promo_codes")
+          .select("used_count")
+          .eq("code", order.promo_code)
+          .maybeSingle();
+        await sb()
+          .from("promo_codes")
+          .update({ used_count: (promoRow?.used_count || 0) + 1 })
+          .eq("code", order.promo_code);
+      }
       return res.json({ status: "approved", transactionId: verify.transaction_id || null });
     }
 
@@ -458,6 +528,24 @@ export async function createApp(): Promise<express.Express> {
     }
 
     return res.json({ status: "pending" });
+  });
+
+  // validate a promo code (no auth needed — but cheap; sandbox-safe)
+  app.post("/api/promo/validate", async (_req, res) => {
+    const codeRaw = _req.body?.code || "";
+    const settings = await getBookSettings();
+    const result = await applyPromoCode(codeRaw, Number(settings.priceBdt), Number(settings.priceUsdt));
+    if (result.error) {
+      return res.json({ valid: false, error: result.error });
+    }
+    res.json({
+      valid: true,
+      code: result.code,
+      discountBdt: result.discountBdt,
+      discountUsdt: result.discountUsdt,
+      finalBdt: result.finalBdt,
+      finalUsdt: result.finalUsdt,
+    });
   });
 
   // ---------- protected chapter content ----------
@@ -769,6 +857,64 @@ export async function createApp(): Promise<express.Express> {
       revenueBdt,
       revenueByDay: byDay,
     });
+  });
+
+  // ---------- Admin: promo codes ----------
+  app.get("/api/admin/promos", async (req, res) => {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
+    const { data, error } = await sb()
+      .from("promo_codes")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ promos: data || [] });
+  });
+
+  app.post("/api/admin/promos", async (req, res) => {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
+
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    const discountType = String(req.body?.discountType || "").trim();
+    const discountValue = Number(req.body?.discountValue);
+    const maxUses = Number(req.body?.maxUses) || 0;
+
+    if (!code) return res.status(400).json({ error: "Code required" });
+    if (!["fixed", "percent"].includes(discountType)) {
+      return res.status(400).json({ error: "discountType must be fixed or percent" });
+    }
+    if (!isFinite(discountValue) || discountValue <= 0) {
+      return res.status(400).json({ error: "Invalid discount value" });
+    }
+    if (discountType === "percent" && discountValue > 100) {
+      return res.status(400).json({ error: "Percent cannot exceed 100" });
+    }
+
+    const { data, error } = await sb()
+      .from("promo_codes")
+      .insert({ code, discount_type: discountType, discount_value: discountValue, max_uses: maxUses })
+      .select("*")
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ promo: data });
+  });
+
+  app.patch("/api/admin/promos/:id", async (req, res) => {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
+    const { active, maxUses } = req.body || {};
+    const updates: Record<string, unknown> = {};
+    if (typeof active === "boolean") updates.active = active;
+    if (maxUses !== undefined) updates.max_uses = Number(maxUses) || 0;
+    const { error } = await sb().from("promo_codes").update(updates).eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/admin/promos/:id", async (req, res) => {
+    if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
+    const { error } = await sb().from("promo_codes").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
   });
 
   // ---------- Server-side Gemini AI Chat endpoint ----------

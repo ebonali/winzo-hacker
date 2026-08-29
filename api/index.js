@@ -925,6 +925,36 @@ async function createApp() {
     }
     return json;
   }
+  async function lookupPromo(codeRaw) {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    if (!code) return { code, promo: null };
+    const { data } = await sb().from("promo_codes").select("*").eq("code", code).maybeSingle();
+    return { code, promo: data || null };
+  }
+  function computePromoDiscount(promo, priceBdt, priceUsdt) {
+    let discountBdt = 0;
+    let discountUsdt = 0;
+    if (promo.discount_type === "percent") {
+      discountBdt = priceBdt * Number(promo.discount_value) / 100;
+      discountUsdt = priceUsdt * Number(promo.discount_value) / 100;
+    } else {
+      discountBdt = Math.min(Number(promo.discount_value), priceBdt);
+      discountUsdt = priceUsdt / priceBdt * discountBdt;
+    }
+    const finalBdt = Math.max(0, Math.round(priceBdt - discountBdt));
+    const finalUsdt = Math.max(0, priceUsdt - discountUsdt);
+    return { discountBdt, discountUsdt, finalBdt, finalUsdt };
+  }
+  const applyPromoCode = async (codeRaw, priceBdt, priceUsdt) => {
+    const { code, promo } = await lookupPromo(codeRaw);
+    if (!promo) return { error: "\u09AA\u09CD\u09B0\u09CB\u09AE\u09CB \u0995\u09CB\u09A1\u099F\u09BF \u09B8\u09A0\u09BF\u0995 \u09A8\u09AF\u09BC\u0964" };
+    if (!promo.active) return { error: "\u09AA\u09CD\u09B0\u09CB\u09AE\u09CB \u0995\u09CB\u09A1\u099F\u09BF \u098F\u0996\u09A8 \u0986\u09B0 \u09B8\u099A\u09B2 \u09A8\u09C7\u0987\u0964" };
+    if (promo.max_uses > 0 && promo.used_count >= promo.max_uses) {
+      return { error: "\u09AA\u09CD\u09B0\u09CB\u09AE\u09CB \u0995\u09CB\u09A1\u099F\u09BF\u09B0 \u09B8\u09B0\u09CD\u09AC\u09CB\u099A\u09CD\u099A \u09AC\u09CD\u09AF\u09AC\u09B9\u09BE\u09B0 \u09B8\u09C0\u09AE\u09BE \u09B6\u09C7\u09B7 \u09B9\u09AF\u09BC\u09C7 \u0997\u09C7\u099B\u09C7\u0964" };
+    }
+    const disc = computePromoDiscount(promo, priceBdt, priceUsdt);
+    return { promo, code, ...disc };
+  };
   async function approveOrderAndGrantAccess(orderId, userId) {
     await sb().from("orders").update({ status: "approved", updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", orderId);
     const { error } = await sb().from("book_access").upsert(
@@ -944,26 +974,34 @@ async function createApp() {
     if (!ZINIPAY_API_KEY) {
       return res.status(503).json({ error: "ZiniPay configured \u09A8\u09C7\u0987\u0964 .env-\u098F ZINIPAY_API_KEY \u09B8\u09C7\u099F \u0995\u09B0\u09C1\u09A8\u0964" });
     }
+    const settings = await getBookSettings();
+    const promoRaw = req.body?.promoCode || "";
+    const promoResult = promoRaw ? await applyPromoCode(promoRaw, Number(settings.priceBdt), Number(settings.priceUsdt)) : null;
+    if (promoRaw && promoResult?.error) {
+      return res.status(400).json({ error: promoResult.error });
+    }
+    const finalBdt = promoResult?.finalBdt ?? Number(settings.priceBdt);
+    const finalUsdt = promoResult?.finalUsdt ?? Number(settings.priceUsdt);
     const { data: order, error: orderErr } = await sb().from("orders").insert({
       user_id: user.id,
       email: user.email,
       tx_id: "-",
-      amount_usdt: BOOK_PRICE_USDT,
+      amount_usdt: finalUsdt,
       status: "pending",
-      payment_method: "zinipay"
+      payment_method: "zinipay",
+      promo_code: promoResult?.code || null
     }).select("id").single();
     if (orderErr || !order) {
       console.error("ZiniPay order insert error:", orderErr?.message);
       return res.status(500).json({ error: "\u0985\u09B0\u09CD\u09A1\u09BE\u09B0 \u09A4\u09C8\u09B0\u09BF \u0995\u09B0\u09BE \u09AF\u09BE\u09AF\u09BC\u09A8\u09BF\u0964" });
     }
     const baseUrl = APP_URL || `http://localhost:${process.env.PORT ? Number(process.env.PORT) : 3e3}`;
-    const settings = await getBookSettings();
-    await sb().from("orders").update({ amount_usdt: settings.priceUsdt }).eq("id", order.id);
+    await sb().from("orders").update({ amount_usdt: finalUsdt }).eq("id", order.id);
     const invoice = await ziniApi("/v1/payment/create", {
       cus_name: user.name,
       cus_email: user.email,
-      amount: settings.priceBdt,
-      metadata: { order_id: order.id, book: settings.title },
+      amount: finalBdt,
+      metadata: { order_id: order.id, book: settings.title, promo_code: promoResult?.code || "" },
       redirect_url: `${baseUrl}/?zini_order=${order.id}`,
       cancel_url: `${baseUrl}/?zini_cancel=${order.id}`
     }).catch((e) => {
@@ -1016,6 +1054,10 @@ async function createApp() {
       }
       const ok = await approveOrderAndGrantAccess(order.id, user.id);
       if (!ok) return res.status(500).json({ error: "\u098F\u0995\u09CD\u09B8\u09C7\u09B8 \u09A6\u09C7\u0993\u09AF\u09BC\u09BE \u09AF\u09BE\u09AF\u09BC\u09A8\u09BF\u0964" });
+      if (order.promo_code) {
+        const { data: promoRow } = await sb().from("promo_codes").select("used_count").eq("code", order.promo_code).maybeSingle();
+        await sb().from("promo_codes").update({ used_count: (promoRow?.used_count || 0) + 1 }).eq("code", order.promo_code);
+      }
       return res.json({ status: "approved", transactionId: verify.transaction_id || null });
     }
     if (payStatus === "FAILED") {
@@ -1023,6 +1065,22 @@ async function createApp() {
       return res.json({ status: "rejected" });
     }
     return res.json({ status: "pending" });
+  });
+  app.post("/api/promo/validate", async (_req, res) => {
+    const codeRaw = _req.body?.code || "";
+    const settings = await getBookSettings();
+    const result = await applyPromoCode(codeRaw, Number(settings.priceBdt), Number(settings.priceUsdt));
+    if (result.error) {
+      return res.json({ valid: false, error: result.error });
+    }
+    res.json({
+      valid: true,
+      code: result.code,
+      discountBdt: result.discountBdt,
+      discountUsdt: result.discountUsdt,
+      finalBdt: result.finalBdt,
+      finalUsdt: result.finalUsdt
+    });
   });
   app.get("/api/book/chapter/:number", async (req, res) => {
     const user = await getAuthedUser(req);
@@ -1234,6 +1292,48 @@ async function createApp() {
       revenueBdt,
       revenueByDay: byDay
     });
+  });
+  app.get("/api/admin/promos", async (req, res) => {
+    if (!await isAdmin(req)) return res.status(403).json({ error: "Admin only" });
+    const { data, error } = await sb().from("promo_codes").select("*").order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ promos: data || [] });
+  });
+  app.post("/api/admin/promos", async (req, res) => {
+    if (!await isAdmin(req)) return res.status(403).json({ error: "Admin only" });
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    const discountType = String(req.body?.discountType || "").trim();
+    const discountValue = Number(req.body?.discountValue);
+    const maxUses = Number(req.body?.maxUses) || 0;
+    if (!code) return res.status(400).json({ error: "Code required" });
+    if (!["fixed", "percent"].includes(discountType)) {
+      return res.status(400).json({ error: "discountType must be fixed or percent" });
+    }
+    if (!isFinite(discountValue) || discountValue <= 0) {
+      return res.status(400).json({ error: "Invalid discount value" });
+    }
+    if (discountType === "percent" && discountValue > 100) {
+      return res.status(400).json({ error: "Percent cannot exceed 100" });
+    }
+    const { data, error } = await sb().from("promo_codes").insert({ code, discount_type: discountType, discount_value: discountValue, max_uses: maxUses }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ promo: data });
+  });
+  app.patch("/api/admin/promos/:id", async (req, res) => {
+    if (!await isAdmin(req)) return res.status(403).json({ error: "Admin only" });
+    const { active, maxUses } = req.body || {};
+    const updates = {};
+    if (typeof active === "boolean") updates.active = active;
+    if (maxUses !== void 0) updates.max_uses = Number(maxUses) || 0;
+    const { error } = await sb().from("promo_codes").update(updates).eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  });
+  app.delete("/api/admin/promos/:id", async (req, res) => {
+    if (!await isAdmin(req)) return res.status(403).json({ error: "Admin only" });
+    const { error } = await sb().from("promo_codes").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
   });
   const aiRateLimit = /* @__PURE__ */ new Map();
   app.post("/api/ai/ask", async (req, res) => {

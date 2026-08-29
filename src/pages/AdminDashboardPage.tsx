@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { Order } from '../types';
 import {
   Shield, CheckCircle2, XCircle, Clock, Users, BookOpen,
-  Search, Eye, Trash2, Plus, BarChart2, Lock, Loader2, RefreshCw
+  Search, Eye, Trash2, Plus, BarChart2, Lock, Loader2, RefreshCw, Ticket, ToggleLeft, ToggleRight
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -40,9 +40,20 @@ interface AdminChapter {
   hasInteractiveSimulator: boolean;
 }
 
+interface AdminPromo {
+  id: string;
+  code: string;
+  discount_type: 'fixed' | 'percent';
+  discount_value: number;
+  max_uses: number;
+  used_count: number;
+  active: boolean;
+  created_at: string;
+}
+
 export const AdminDashboardPage: React.FC = () => {
   const { currentUser, navigate, showToast } = useStore();
-  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'users' | 'books'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'users' | 'books' | 'promos'>('overview');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [newEmailInput, setNewEmailInput] = useState('');
@@ -61,6 +72,11 @@ export const AdminDashboardPage: React.FC = () => {
   } | null>(null);
   const [editingChapter, setEditingChapter] = useState<AdminChapter | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
+
+  // promo codes state
+  const [promos, setPromos] = useState<AdminPromo[]>([]);
+  const [newPromo, setNewPromo] = useState({ code: '', discountType: 'fixed', discountValue: '', maxUses: '' });
+  const [promoActions, setPromoActions] = useState<Record<string, boolean>>({});
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -97,6 +113,72 @@ export const AdminDashboardPage: React.FC = () => {
   useEffect(() => {
     if (currentUser?.role === 'admin' && activeTab === 'books') loadBook();
   }, [currentUser, activeTab, loadBook]);
+
+  // ----- promo codes -----
+  const loadPromos = useCallback(async () => {
+    try {
+      const data = await api<{ promos: AdminPromo[] }>('/api/admin/promos');
+      setPromos(data.promos || []);
+    } catch (err: any) {
+      showToast(err?.message || 'প্রোমো কোড লোড করা যায়নি।');
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (currentUser?.role === 'admin' && activeTab === 'promos') loadPromos();
+  }, [currentUser, activeTab, loadPromos]);
+
+  const createPromo = async () => {
+    if (!newPromo.code.trim()) { showToast('কোড লিখুন।'); return; }
+    if (!newPromo.discountValue || Number(newPromo.discountValue) <= 0) { showToast('ছাড়ের পরিমাণ দিন।'); return; }
+    setIsSavingBook(true);
+    try {
+      await api('/api/admin/promos', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: newPromo.code.trim(),
+          discountType: newPromo.discountType,
+          discountValue: Number(newPromo.discountValue),
+          maxUses: newPromo.maxUses ? Number(newPromo.maxUses) : 0,
+        }),
+      });
+      showToast('প্রোমো কোড তৈরি হয়েছে!');
+      setNewPromo({ code: '', discountType: 'fixed', discountValue: '', maxUses: '' });
+      await loadPromos();
+    } catch (err: any) {
+      showToast(err?.message || 'প্রোমো তৈরি করা যায়নি।');
+    } finally {
+      setIsSavingBook(false);
+    }
+  };
+
+  const togglePromo = async (p: AdminPromo) => {
+    setPromoActions((s) => ({ ...s, [p.id]: true }));
+    try {
+      await api(`/api/admin/promos/${p.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: !p.active }),
+      });
+      await loadPromos();
+    } catch (err: any) {
+      showToast(err?.message || 'আপডেট করা যায়নি।');
+    } finally {
+      setPromoActions((s) => ({ ...s, [p.id]: false }));
+    }
+  };
+
+  const deletePromo = async (p: AdminPromo) => {
+    setPromoActions((s) => ({ ...s, [p.id]: true }));
+    try {
+      await api(`/api/admin/promos/${p.id}`, { method: 'DELETE' });
+      showToast(`${p.code} মুছে ফেলা হয়েছে।`);
+      await loadPromos();
+    } catch (err: any) {
+      showToast(err?.message || 'মোছা যায়নি।');
+    } finally {
+      setPromoActions((s) => ({ ...s, [p.id]: false }));
+    }
+  };
 
   const saveSettings = async () => {
     if (!bookInfo) return;
@@ -359,6 +441,18 @@ export const AdminDashboardPage: React.FC = () => {
           >
             <BookOpen className="w-4 h-4" />
             <span>বই ব্যবস্থাপনা</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('promos')}
+            className={`w-full px-4 py-3 rounded-xl font-bold text-xs flex items-center gap-3 transition cursor-pointer ${
+              activeTab === 'promos'
+                ? 'bg-brass text-[#171310] hover:bg-brass-bright text-white '
+                : 'text-white/70 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <Ticket className="w-4 h-4" />
+            <span>প্রোমো কোড</span>
           </button>
         </div>
 
@@ -870,6 +964,130 @@ export const AdminDashboardPage: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                </div>
+              )}
+            {/* TAB 5: PROMO CODES */}
+              {activeTab === 'promos' && (
+                <div className="space-y-6">
+
+                  {/* add promo form */}
+                  <div className="bento-card p-6 space-y-4">
+                    <h3 className="font-bold text-white font-display flex items-center gap-2">
+                      <Plus className="w-4 h-4 text-brass" /> নতুন প্রোমো কোড
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted block">কোড</label>
+                        <input
+                          value={newPromo.code}
+                          onChange={(e) => setNewPromo({ ...newPromo, code: e.target.value.toUpperCase() })}
+                          placeholder="TRADE10"
+                          className="w-full bg-[#050505] border border-line focus:border-brass rounded-lg px-3 py-2.5 text-sm text-paper outline-none font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted block">ধরন</label>
+                        <select
+                          value={newPromo.discountType}
+                          onChange={(e) => setNewPromo({ ...newPromo, discountType: e.target.value })}
+                          className="w-full bg-[#050505] border border-line focus:border-brass rounded-lg px-3 py-2.5 text-sm text-paper outline-none"
+                        >
+                          <option value="fixed">৳ (নির্দিষ্ট টাকা)</option>
+                          <option value="percent">% (শতাংশ)</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted block">ছাড়ের পরিমাণ</label>
+                        <input
+                          type="number" min={1}
+                          value={newPromo.discountValue}
+                          onChange={(e) => setNewPromo({ ...newPromo, discountValue: e.target.value })}
+                          placeholder={newPromo.discountType === 'percent' ? '10' : '100'}
+                          className="w-full bg-[#050505] border border-line focus:border-brass rounded-lg px-3 py-2.5 text-sm text-paper outline-none num"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted block">সর্বোচ্চ ব্যবহার (0 = ∞)</label>
+                        <input
+                          type="number" min={0}
+                          value={newPromo.maxUses}
+                          onChange={(e) => setNewPromo({ ...newPromo, maxUses: e.target.value })}
+                          placeholder="0"
+                          className="w-full bg-[#050505] border border-line focus:border-brass rounded-lg px-3 py-2.5 text-sm text-paper outline-none num"
+                        />
+                      </div>
+                    </div>
+                    <button onClick={createPromo} disabled={isSavingBook} className="btn-primary btn-sm disabled:opacity-40">
+                      {isSavingBook ? 'তৈরি হচ্ছে...' : 'প্রোমো কোড তৈরি করুন'}
+                    </button>
+                  </div>
+
+                  {/* promo list */}
+                  <div className="bento-card p-6">
+                    <h3 className="font-bold text-white font-display mb-4">সচল প্রোমো কোডসমূহ</h3>
+                    {promos.length === 0 ? (
+                      <p className="py-6 text-center text-faint text-xs font-mono">কোনো প্রোমো কোড নেই।</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-faint font-mono uppercase tracking-wider">
+                            <tr className="hairline-b">
+                              <th className="py-2 pr-4">কোড</th>
+                              <th className="py-2 pr-4">ছাড়</th>
+                              <th className="py-2 pr-4">ব্যবহার</th>
+                              <th className="py-2 pr-4">স্ট্যাটাস</th>
+                              <th className="py-2 text-right">অ্যাকশন</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {promos.map((p) => (
+                              <tr key={p.id} className="hairline-b last:border-0">
+                                <td className="py-3 pr-4 font-mono font-bold text-brass">{p.code}</td>
+                                <td className="py-3 pr-4 text-paper">
+                                  {p.discount_type === 'percent'
+                                    ? `${p.discount_value}%`
+                                    : `${p.discount_value}৳`}
+                                </td>
+                                <td className="py-3 pr-4 text-muted num">
+                                  {p.used_count} / {p.max_uses === 0 ? '∞' : p.max_uses}
+                                </td>
+                                <td className="py-3 pr-4">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    p.active
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                      : 'bg-white/5 text-faint border border-line'
+                                  }`}>
+                                    {p.active ? 'সক্রিয়' : 'বন্ধ'}
+                                  </span>
+                                </td>
+                                <td className="py-3 text-right">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      onClick={() => togglePromo(p)}
+                                      disabled={promoActions[p.id]}
+                                      className="text-brass hover:text-brass-bright transition cursor-pointer disabled:opacity-40"
+                                      title={p.active ? 'বন্ধ করুন' : 'সচল করুন'}
+                                    >
+                                      {p.active ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
+                                    </button>
+                                    <button
+                                      onClick={() => deletePromo(p)}
+                                      disabled={promoActions[p.id]}
+                                      className="text-white/40 hover:text-red-400 transition cursor-pointer disabled:opacity-40"
+                                      title="মুছে ফেলুন"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
 
                 </div>
               )}
